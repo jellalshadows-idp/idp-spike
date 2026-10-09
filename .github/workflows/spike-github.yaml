@@ -55,9 +55,9 @@ jobs:
           esac
           code=$?
           set -e
-          echo "${ACTION}_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
-          echo "${ACTION}_exit=${code}" >> "$GITHUB_STEP_SUMMARY"
-          echo "resources_in_state=$(tofu state list 2>/dev/null | wc -l)" >> "$GITHUB_STEP_SUMMARY"
+          echo "${ACTION}_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "${ACTION}_exit=${code}" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "resources_in_state=$(tofu state list 2>/dev/null | wc -l)" | tee -a "$GITHUB_STEP_SUMMARY"
           if [ "$ACTION" != "plan" ] && [ "$code" != "0" ]; then exit "$code"; fi
       - name: save state (spike only; plaintext of spike- resources is acceptable)
         if: always()

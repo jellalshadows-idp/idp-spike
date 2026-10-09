@@ -22,9 +22,9 @@ jobs:
         run: |
           probe() {
             code=$( (gh api -i "$1" 2>/dev/null || true) | head -n1 | awk '{print $2}')
-            echo "| \`$1\` | ${code:-error} |" >> "$GITHUB_STEP_SUMMARY"
+            echo "| \`$1\` | ${code:-error} |" | tee -a "$GITHUB_STEP_SUMMARY"
           }
-          { echo "| endpoint | status |"; echo "|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          { echo "| endpoint | status |"; echo "|---|---|"; } | tee -a "$GITHUB_STEP_SUMMARY"
           probe "repos/$R"
           probe "repos/$R/rulesets"
           probe "repos/$R/environments/idp-approval"
@@ -36,5 +36,5 @@ jobs:
           probe "orgs/jellalshadows-idp/actions/permissions/workflow"
           probe "orgs/jellalshadows-idp/installations"
           for id in $(gh api "repos/$R/rulesets" --jq '.[].id'); do
-            gh api "repos/$R/rulesets/$id" --jq '"- ruleset " + .name + ": bypass_actors present = " + (has("bypass_actors") | tostring)' >> "$GITHUB_STEP_SUMMARY"
+            gh api "repos/$R/rulesets/$id" --jq '"- ruleset " + .name + ": bypass_actors present = " + (has("bypass_actors") | tostring)' | tee -a "$GITHUB_STEP_SUMMARY"
           done
