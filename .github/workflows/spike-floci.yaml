@@ -1,0 +1,85 @@
+name: spike-floci
+
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  floci:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_REGION: eu-west-1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+      - name: start floci (ECR needs the Docker socket, per floci's README)
+        run: |
+          start=$(date +%s)
+          docker run -d --name floci -p 4566:4566 -u root \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            floci/floci:2.1.0@sha256:2e2343974a15137a6bda6de5a9e0b16207f97a786cc57ee9c2bf25d14a67b84c
+          for _ in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:4566/ || true)
+            if [ "$code" != "000" ]; then break; fi
+            sleep 1
+          done
+          echo "floci_ready_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: drop in the CI-owned override (spec §5.6)
+        run: cp ci/floci_override.tf.json aws/
+      - name: dev account (000000000001) — cold init, apply v1
+        working-directory: aws
+        env:
+          AWS_ACCESS_KEY_ID: "000000000001"
+          TF_VAR_env: dev
+          TF_VAR_image_tag_mutability: MUTABLE
+        run: |
+          start=$(date +%s); tofu init -input=false
+          echo "init_cold_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          start=$(date +%s); tofu apply -input=false -auto-approve
+          echo "apply_v1_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          arn=$(tofu output -raw role_arn)
+          echo "role_arn=$arn" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "repository_url=$(tofu output -raw repository_url)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$arn" != "arn:aws:iam::000000000001:role/api-dev-ci" ]; then
+            echo "::error::role ARN does not carry the 12-digit account id"; exit 1
+          fi
+      - name: replay — plan v2 on top of v1 (this is what every PR plan does)
+        working-directory: aws
+        env:
+          AWS_ACCESS_KEY_ID: "000000000001"
+          TF_VAR_env: dev
+          TF_VAR_image_tag_mutability: IMMUTABLE
+        run: |
+          start=$(date +%s)
+          set +e; tofu plan -input=false -detailed-exitcode; code=$?; set -e
+          echo "plan_v2_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "plan_v2_exit=$code (want 2: one in-place update)" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$code" != "2" ]; then echo "::error::expected exactly a diff"; exit 1; fi
+      - name: pro account (000000000003) is isolated from dev
+        env:
+          AWS_ACCESS_KEY_ID: "000000000003"
+        run: |
+          if aws --endpoint-url http://localhost:4566 iam get-role --role-name api-dev-ci; then
+            echo "::error::account isolation broken: pro can see dev's role"; exit 1
+          fi
+          echo "isolation=ok" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: cached init (provider already in the plugin cache)
+        env:
+          TF_PLUGIN_CACHE_DIR: /tmp/plugin-cache
+        run: |
+          mkdir -p /tmp/plugin-cache /tmp/a /tmp/b
+          cp aws/main.tf /tmp/a/ && cp aws/main.tf /tmp/b/
+          (cd /tmp/a && tofu init -input=false >/dev/null)
+          start=$(date +%s); (cd /tmp/b && tofu init -input=false >/dev/null)
+          echo "init_cached_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: floci logs on failure
+        if: failure()
+        run: docker logs floci | tail -n 200
