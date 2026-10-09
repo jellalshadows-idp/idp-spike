@@ -1,0 +1,83 @@
+name: spike-state
+
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  write:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      TF_ENCRYPTION: ${{ secrets.SPIKE_TF_ENCRYPTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+      - name: apply and commit the encrypted state to a branch
+        working-directory: state
+        run: |
+          start=$(date +%s)
+          tofu init -input=false
+          tofu apply -input=false -auto-approve
+          echo "apply_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
+          echo "state_bytes=$(wc -c < terraform.tfstate)" >> "$GITHUB_STEP_SUMMARY"
+          python3 -c "import json;d=json.load(open('terraform.tfstate'));print('state_keys=' + ','.join(sorted(d)))" >> "$GITHUB_STEP_SUMMARY"
+          git config user.name "idp-spike"
+          git config user.email "idp-spike@users.noreply.github.com"
+          git switch -c spike-wet
+          git add -f terraform.tfstate
+          git commit -m "chore: spike encrypted state"
+          git push -f origin spike-wet
+
+  read:
+    needs: write
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      TF_ENCRYPTION: ${{ secrets.SPIKE_TF_ENCRYPTION }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: spike-wet
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+      - name: a fresh job reads the committed state and sees no changes
+        working-directory: state
+        run: |
+          tofu init -input=false
+          tofu plan -input=false -detailed-exitcode
+          echo "roundtrip=ok (plan exit 0)" >> "$GITHUB_STEP_SUMMARY"
+      - name: tampered ciphertext is rejected
+        working-directory: state
+        run: |
+          cp terraform.tfstate /tmp/good.tfstate
+          python3 - <<'EOF'
+          import json
+          d = json.load(open("terraform.tfstate"))
+          data = d["encrypted_data"]
+          flipped = ("B" if data[40] == "A" else "A")
+          d["encrypted_data"] = data[:40] + flipped + data[41:]
+          json.dump(d, open("terraform.tfstate", "w"))
+          EOF
+          if tofu plan -input=false; then
+            echo "::error::tampered state was accepted"; exit 1
+          fi
+          echo "tamper=rejected" >> "$GITHUB_STEP_SUMMARY"
+          cp /tmp/good.tfstate terraform.tfstate
+      - name: without TF_ENCRYPTION, writing plaintext is refused
+        run: |
+          mkdir /tmp/fresh && cp state/main.tf /tmp/fresh/
+          cd /tmp/fresh
+          tofu init -input=false
+          if TF_ENCRYPTION="" tofu apply -input=false -auto-approve; then
+            echo "::error::enforced=true did not stop a plaintext write"; exit 1
+          fi
+          echo "plaintext=refused" >> "$GITHUB_STEP_SUMMARY"
