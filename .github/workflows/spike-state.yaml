@@ -33,6 +33,10 @@ jobs:
           git commit -m "chore: spike encrypted state"
           git push -f origin spike-wet
 
+      - name: print summary to the log
+        if: always()
+        run: cat "$GITHUB_STEP_SUMMARY"
+
   read:
     needs: write
     runs-on: ubuntu-24.04
@@ -81,3 +85,6 @@ jobs:
             echo "::error::enforced=true did not stop a plaintext write"; exit 1
           fi
           echo "plaintext=refused" >> "$GITHUB_STEP_SUMMARY"
+      - name: print summary to the log
+        if: always()
+        run: cat "$GITHUB_STEP_SUMMARY"
