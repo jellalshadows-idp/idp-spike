@@ -1,0 +1,74 @@
+name: spike-github
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [apply, plan, destroy]
+        default: apply
+
+permissions: {}
+
+concurrency:
+  group: spike-github
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.SPIKE_WRITER_CLIENT_ID }}
+          private-key: ${{ secrets.SPIKE_WRITER_PRIVATE_KEY }}
+          owner: jellalshadows-idp
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.12.6
+          tofu_wrapper: false
+      - name: restore state from the spike-github-state branch
+        run: |
+          if git fetch origin spike-github-state; then
+            git checkout origin/spike-github-state -- github/terraform.tfstate
+          else
+            echo "no state yet"
+          fi
+      - name: tofu
+        working-directory: github
+        env:
+          GITHUB_TOKEN: ${{ steps.app.outputs.token }}
+          TF_VAR_writer_app_id: ${{ vars.SPIKE_WRITER_APP_ID }}
+          ACTION: ${{ inputs.action }}
+        run: |
+          tofu init -input=false
+          start=$(date +%s)
+          set +e
+          case "$ACTION" in
+            apply)   tofu apply -input=false -auto-approve ;;
+            plan)    tofu plan -input=false -detailed-exitcode ;;
+            destroy) tofu destroy -input=false -auto-approve ;;
+          esac
+          code=$?
+          set -e
+          echo "${ACTION}_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
+          echo "${ACTION}_exit=${code}" >> "$GITHUB_STEP_SUMMARY"
+          echo "resources_in_state=$(tofu state list 2>/dev/null | wc -l)" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$ACTION" != "plan" ] && [ "$code" != "0" ]; then exit "$code"; fi
+      - name: save state (spike only; plaintext of spike- resources is acceptable)
+        if: always()
+        run: |
+          [ -f github/terraform.tfstate ] || exit 0
+          git config user.name "idp-spike"
+          git config user.email "idp-spike@users.noreply.github.com"
+          cp github/terraform.tfstate /tmp/state
+          git fetch origin spike-github-state || true
+          git switch -C spike-github-state
+          mkdir -p github && cp /tmp/state github/terraform.tfstate
+          git add -f github/terraform.tfstate
+          git commit -m "chore: spike github state" || exit 0
+          git push -f origin spike-github-state

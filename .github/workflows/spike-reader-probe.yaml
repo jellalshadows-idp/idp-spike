@@ -1,0 +1,40 @@
+name: spike-reader-probe
+
+on: workflow_dispatch
+
+permissions: {}
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app
+        with:
+          client-id: ${{ vars.SPIKE_READER_CLIENT_ID }}
+          private-key: ${{ secrets.SPIKE_READER_PRIVATE_KEY }}
+          owner: jellalshadows-idp
+      - name: probe what the reader token can read
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          R: jellalshadows-idp/idp-claims-e2e
+        run: |
+          probe() {
+            code=$( (gh api -i "$1" 2>/dev/null || true) | head -n1 | awk '{print $2}')
+            echo "| \`$1\` | ${code:-error} |" >> "$GITHUB_STEP_SUMMARY"
+          }
+          { echo "| endpoint | status |"; echo "|---|---|"; } >> "$GITHUB_STEP_SUMMARY"
+          probe "repos/$R"
+          probe "repos/$R/rulesets"
+          probe "repos/$R/environments/idp-approval"
+          probe "repos/$R/environments/idp-approval/deployment-branch-policies"
+          probe "repos/$R/environments/idp-approval/secrets"
+          probe "repos/$R/environments/idp-write/variables/IDP_WRITER_CLIENT_ID"
+          probe "repos/$R/actions/variables/IDP_READER_CLIENT_ID"
+          probe "repos/$R/actions/secrets/IDP_STATE_PASSPHRASE"
+          probe "orgs/jellalshadows-idp/actions/permissions/workflow"
+          probe "orgs/jellalshadows-idp/installations"
+          for id in $(gh api "repos/$R/rulesets" --jq '.[].id'); do
+            gh api "repos/$R/rulesets/$id" --jq '"- ruleset " + .name + ": bypass_actors present = " + (has("bypass_actors") | tostring)' >> "$GITHUB_STEP_SUMMARY"
+          done
