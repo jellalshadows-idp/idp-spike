@@ -23,19 +23,15 @@ jobs:
           start=$(date +%s)
           tofu init -input=false
           tofu apply -input=false -auto-approve
-          echo "apply_seconds=$(( $(date +%s) - start ))" >> "$GITHUB_STEP_SUMMARY"
-          echo "state_bytes=$(wc -c < terraform.tfstate)" >> "$GITHUB_STEP_SUMMARY"
-          python3 -c "import json;d=json.load(open('terraform.tfstate'));print('state_keys=' + ','.join(sorted(d)))" >> "$GITHUB_STEP_SUMMARY"
+          echo "apply_seconds=$(( $(date +%s) - start ))" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "state_bytes=$(wc -c < terraform.tfstate)" | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 -c "import json;d=json.load(open('terraform.tfstate'));print('state_keys=' + ','.join(sorted(d)))" | tee -a "$GITHUB_STEP_SUMMARY"
           git config user.name "idp-spike"
           git config user.email "idp-spike@users.noreply.github.com"
           git switch -c spike-wet
           git add -f terraform.tfstate
           git commit -m "chore: spike encrypted state"
           git push -f origin spike-wet
-
-      - name: print summary to the log
-        if: always()
-        run: cat "$GITHUB_STEP_SUMMARY"
 
   read:
     needs: write
@@ -58,7 +54,7 @@ jobs:
         run: |
           tofu init -input=false
           tofu plan -input=false -detailed-exitcode
-          echo "roundtrip=ok (plan exit 0)" >> "$GITHUB_STEP_SUMMARY"
+          echo "roundtrip=ok (plan exit 0)" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: tampered ciphertext is rejected
         working-directory: state
         run: |
@@ -74,7 +70,7 @@ jobs:
           if tofu plan -input=false; then
             echo "::error::tampered state was accepted"; exit 1
           fi
-          echo "tamper=rejected" >> "$GITHUB_STEP_SUMMARY"
+          echo "tamper=rejected" | tee -a "$GITHUB_STEP_SUMMARY"
           cp /tmp/good.tfstate terraform.tfstate
       - name: without TF_ENCRYPTION, writing plaintext is refused
         run: |
@@ -84,7 +80,4 @@ jobs:
           if TF_ENCRYPTION="" tofu apply -input=false -auto-approve; then
             echo "::error::enforced=true did not stop a plaintext write"; exit 1
           fi
-          echo "plaintext=refused" >> "$GITHUB_STEP_SUMMARY"
-      - name: print summary to the log
-        if: always()
-        run: cat "$GITHUB_STEP_SUMMARY"
+          echo "plaintext=refused" | tee -a "$GITHUB_STEP_SUMMARY"
